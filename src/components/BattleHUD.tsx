@@ -3,14 +3,14 @@ import {
   ECONOMY_CONFIG,
   FIGHTERS,
   FIGHTER_MAP,
+  getWaveConfig,
   KING_ITEMS,
   KING_SKILLS,
   MERCENARIES,
   SPELL_MAP,
-  WAVE_MAP,
 } from '../game/config';
 import { getTypeMultiplier } from '../game/damage';
-import { getActiveFactionSynergies, getSellRefundAmount } from '../game/engine';
+import { collectLootDrop, getActiveFactionSynergies, getSellRefundAmount } from '../game/engine';
 import {
   AttackType,
   DefenseType,
@@ -124,7 +124,7 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
   const viewedLane = state.lanes[state.activeViewedLaneId] ?? playerLane;
   const westKing = state.kings[0];
   const eastKing = state.kings[1];
-  const currentWave = WAVE_MAP[state.waveNumber] ?? WAVE_MAP[1];
+  const currentWave = getWaveConfig(state.waveNumber);
 
   const westHpPct = Math.max(
     0,
@@ -157,10 +157,11 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
   );
   const valueDiff = playerLane.fighterValue - playerLane.recommendedValue;
 
+  const maxPreviewWave = state.endlessMode ? state.waveNumber + 2 : 21;
   const upcomingWaves = [
-    WAVE_MAP[state.waveNumber],
-    WAVE_MAP[Math.min(21, state.waveNumber + 1)],
-    WAVE_MAP[Math.min(21, state.waveNumber + 2)],
+    getWaveConfig(state.waveNumber),
+    getWaveConfig(Math.min(maxPreviewWave, state.waveNumber + 1)),
+    getWaveConfig(Math.min(maxPreviewWave, state.waveNumber + 2)),
   ].filter(Boolean);
 
   const toggleDrawer = (drawer: 'WAVE' | 'MATRIX' | 'LOG') => {
@@ -181,10 +182,10 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
           <div className="flex items-center gap-1 bg-[#0C161E]/95 border-x border-b border-[#26404F] px-2 py-0.5 rounded-b">
             {[
               state.waveNumber,
-              Math.min(21, state.waveNumber + 1),
-              Math.min(21, state.waveNumber + 2),
+              Math.min(maxPreviewWave, state.waveNumber + 1),
+              Math.min(maxPreviewWave, state.waveNumber + 2),
             ].map((wNum, idx) => {
-              const wCfg = WAVE_MAP[wNum] ?? currentWave;
+              const wCfg = getWaveConfig(wNum);
               const isCurr = idx === 0;
               return (
                 <div
@@ -201,6 +202,15 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
                 </div>
               );
             })}
+
+            {state.endlessMode && (
+              <span
+                data-testid="endless-mode-badge"
+                className="px-1.5 py-0.2 rounded bg-purple-600/30 border border-purple-400/70 text-[8px] font-mono font-bold text-purple-200 uppercase"
+              >
+                ∞ ENDLESS
+              </span>
+            )}
 
             <div className="h-3 w-px bg-[#26404F] mx-0.5" />
 
@@ -328,6 +338,21 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
             <div className="mt-0.5 px-2 py-0.2 rounded bg-[#0E1B24]/90 border border-amber-400/40 text-[9px] font-mono text-amber-300">
               {feedbackBanner}
             </div>
+          )}
+          {(playerLane.lootDrops?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              data-testid="claim-loot-drops-btn"
+              onClick={() => {
+                sound.playUpgradeFighter();
+                for (const d of [...(playerLane.lootDrops ?? [])]) {
+                  collectLootDrop(state, 0, d.id);
+                }
+              }}
+              className="mt-0.5 px-2.5 py-0.5 rounded bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-extrabold text-[9px] font-mono shadow-lg animate-pulse cursor-pointer"
+            >
+              🎁 Thu Thập Chiến Lợi Phẩm ({playerLane.lootDrops?.length})
+            </button>
           )}
         </div>
 
@@ -703,15 +728,22 @@ export const BattleHUD: React.FC<BattleHUDProps> = ({
                     const upg = FIGHTER_MAP[upgId];
                     if (!upg) return null;
                     const canAfford = playerLane.gold >= upg.cost;
+                    const isApex = upg.tier === 3;
                     return (
                       <button
                         key={upg.id}
                         type="button"
+                        data-testid={`evolve-to-${upg.id}`}
                         disabled={!canAfford}
                         onClick={() => onUpgradePlacedFighter(selectedPlaced.instanceId, upg.id)}
-                        className="px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-extrabold text-[10px] cursor-pointer"
+                        className={`px-2 py-0.5 rounded disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-extrabold text-[10px] cursor-pointer ${
+                          isApex
+                            ? 'bg-gradient-to-r from-amber-400 via-yellow-300 to-orange-400 hover:brightness-110 shadow-[0_0_12px_rgba(251,191,36,0.5)]'
+                            : 'bg-amber-500 hover:bg-amber-400'
+                        }`}
                       >
-                        Evolve: {upg.name} ({upg.cost}g)
+                        {isApex ? '👑 Tiến Hóa T3: ' : 'Evolve: '}
+                        {upg.name} ({upg.cost}g)
                       </button>
                     );
                   })}

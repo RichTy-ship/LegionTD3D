@@ -8,6 +8,7 @@ interface StatusModalProps {
   onResume: () => void;
   onRestart: () => void;
   onReturnToTitle: () => void;
+  onContinueEndless?: () => void;
 }
 
 export const StatusModal: React.FC<StatusModalProps> = ({
@@ -16,6 +17,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   onResume,
   onRestart,
   onReturnToTitle,
+  onContinueEndless,
 }) => {
   const playerLane = state.lanes[0];
   const westKing = state.kings[0];
@@ -87,7 +89,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
             <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800">
               <div className="text-[10px] text-slate-400 uppercase">ĐỢT QUÁI (WAVE)</div>
               <div className="text-lg font-bold text-amber-300 mt-0.5">
-                {state.waveNumber} / 21
+                {state.waveNumber} / {state.endlessMode ? '∞' : '21'}
               </div>
             </div>
 
@@ -241,6 +243,22 @@ export const StatusModal: React.FC<StatusModalProps> = ({
               </>
             ) : (
               <>
+                {modalType === 'VICTORY' &&
+                  state.waveNumber >= 21 &&
+                  !state.endlessMode &&
+                  onContinueEndless && (
+                    <button
+                      type="button"
+                      data-testid="continue-endless-btn"
+                      onClick={() => {
+                        sound.playWaveStart();
+                        onContinueEndless();
+                      }}
+                      className="w-full py-3 px-4 rounded-lg bg-gradient-to-r from-purple-600 via-fuchsia-500 to-indigo-600 hover:brightness-110 text-white font-extrabold text-xs tracking-wide shadow-[0_0_20px_rgba(168,85,247,0.45)] transition-all cursor-pointer"
+                    >
+                      ♾️ TIẾP TỤC CHẾ ĐỘ VÔ TẬN (ENDLESS WAVE 22+)
+                    </button>
+                  )}
                 <button
                   type="button"
                   data-start="true"

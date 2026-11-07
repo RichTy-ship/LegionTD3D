@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  CAMPAIGN_MISSIONS,
   FACTIONS,
   LEGION_SPELLS,
   SPELL_MAP,
@@ -13,50 +14,6 @@ import {
 } from '../game/types';
 import { sound } from '../game/audio';
 
-interface CampaignMissionPreset {
-  id: string;
-  subtitle: string;
-  title: string;
-  description: string;
-  mode: MatchMode;
-  aiDifficulty: AIDifficulty;
-  recommendedFaction: FactionId;
-  recommendedSpellId: string;
-}
-
-const CAMPAIGN_PRESETS: CampaignMissionPreset[] = [
-  {
-    id: 'mission_cinder_bastion',
-    subtitle: 'Act I · Inferno Outpost',
-    title: 'Cinder Bastion',
-    description: 'Defend the West Gate with Inferno tanks and Royal Cleave [Q].',
-    mode: '2v2',
-    aiDifficulty: 'Normal',
-    recommendedFaction: 'Inferno',
-    recommendedSpellId: 'spell_golden_age',
-  },
-  {
-    id: 'mission_clockwork_siege',
-    subtitle: 'Act II · Ironforge',
-    title: 'Clockwork Siege',
-    description: 'Scale Mythium workers and Mechanic artillery to overwhelm the East Pact.',
-    mode: '2v2',
-    aiDifficulty: 'Hard',
-    recommendedFaction: 'Mechanic',
-    recommendedSpellId: 'spell_overclock',
-  },
-  {
-    id: 'mission_sovereign_eclipse',
-    subtitle: 'Act III · Apex Trial',
-    title: 'Sovereign Eclipse',
-    description: '1v1 duel against Expert AI. Master Citadel Relics and Cataclysm [R].',
-    mode: '1v1',
-    aiDifficulty: 'Expert',
-    recommendedFaction: 'Divine',
-    recommendedSpellId: 'spell_aegis_barrier',
-  },
-];
-
 interface TitleScreenProps {
   selectedMode: MatchMode;
   setSelectedMode: (mode: MatchMode) => void;
@@ -66,6 +23,8 @@ interface TitleScreenProps {
   setSelectedFaction: (faction: FactionId) => void;
   selectedSpellId: string;
   setSelectedSpellId: (spellId: string) => void;
+  endlessMode: boolean;
+  setEndlessMode: (endless: boolean) => void;
   hasSavedMatch: boolean;
   matchHistory: MatchHistoryRecord[];
   muted: boolean;
@@ -78,7 +37,9 @@ interface TitleScreenProps {
     mode: MatchMode,
     difficulty: AIDifficulty,
     faction: FactionId,
-    spellId: string
+    spellId: string,
+    campaignMissionId: string,
+    endlessMode?: boolean
   ) => void;
   onOpenAssetStudio: () => void;
 }
@@ -92,6 +53,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   setSelectedFaction,
   selectedSpellId,
   setSelectedSpellId,
+  endlessMode,
+  setEndlessMode,
   hasSavedMatch,
   matchHistory,
   muted,
@@ -153,7 +116,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             {(
               [
                 { id: 'PLAY', label: 'Skirmish' },
-                { id: 'CAMPAIGN', label: 'Campaign (3)' },
+                { id: 'CAMPAIGN', label: `Campaign (${CAMPAIGN_MISSIONS.length})` },
                 { id: 'AUDIO', label: 'Audio & Settings' },
               ] as const
             ).map((tab) => (
@@ -339,22 +302,65 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Endless Mode & Tier 3 Apex Feature Strip */}
+              <div className="p-2.5 rounded bg-[#0A131A] border border-[#243C4A] flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs">♾️</span>
+                  <div>
+                    <div className="text-xs font-bold text-purple-300">
+                      Chế Độ Vô Tận (Endless Ascension Wave 22+)
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      Mở khóa Tiến Hóa Tier 3 Sovereign, Rương Chiến Lợi Phẩm Boss &amp; Sóng Quái Vô Hạn
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  data-testid="toggle-endless-mode"
+                  onClick={() => {
+                    sound.playUiClick();
+                    setEndlessMode(!endlessMode);
+                  }}
+                  className={`px-3 py-1 rounded text-xs font-extrabold border transition-all cursor-pointer ${
+                    endlessMode
+                      ? 'bg-purple-600 border-purple-300 text-white shadow-[0_0_12px_rgba(168,85,247,0.45)]'
+                      : 'bg-[#0F1D27] border-[#26404F] text-slate-300 hover:border-purple-400'
+                  }`}
+                >
+                  {endlessMode ? '∞ Endless: BẬT (ON)' : 'Tiêu Chuẩn (21 Waves)'}
+                </button>
+              </div>
             </>
           )}
 
           {activeTab === 'CAMPAIGN' && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {CAMPAIGN_PRESETS.map((m) => (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 max-h-[300px] overflow-y-auto pr-1">
+              {CAMPAIGN_MISSIONS.map((m) => (
                 <div
                   key={m.id}
-                  className="p-3 rounded bg-[#0F1D27] border border-[#233A48] flex flex-col justify-between space-y-2.5"
+                  data-testid={`campaign-card-${m.id}`}
+                  className="p-2.5 rounded bg-[#0F1D27] border border-[#233A48] flex flex-col justify-between space-y-2"
                 >
                   <div>
-                    <div className="text-[10px] font-mono text-amber-400">{m.subtitle}</div>
-                    <div className="text-sm font-bold font-display text-white mt-0.5">
+                    <div className="flex items-center justify-between text-[10px] font-mono">
+                      <span className="text-amber-400">{m.subtitle}</span>
+                      {m.endlessMode && (
+                        <span className="px-1 rounded bg-purple-500/30 text-purple-300 font-bold">
+                          ∞
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs font-bold font-display text-white mt-0.5">
                       {m.title}
                     </div>
-                    <p className="text-xs text-slate-300 mt-1">{m.description}</p>
+                    <p className="text-[11px] text-slate-300 mt-0.5 leading-snug">
+                      {m.description}
+                    </p>
+                    <div className="mt-1.5 px-1.5 py-0.5 rounded bg-[#091219] border border-emerald-500/30 text-[9px] font-mono text-emerald-300">
+                      ★ {m.modifierLabel}
+                    </div>
                   </div>
                   <button
                     type="button"
@@ -364,12 +370,14 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                         m.mode,
                         m.aiDifficulty,
                         m.recommendedFaction,
-                        m.recommendedSpellId
+                        m.recommendedSpellId,
+                        m.id,
+                        m.endlessMode
                       );
                     }}
-                    className="w-full py-1.5 rounded bg-[#D99B26] hover:bg-amber-400 text-slate-950 font-extrabold text-xs cursor-pointer"
+                    className="w-full py-1.5 rounded bg-[#D99B26] hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] cursor-pointer"
                   >
-                    Start ({m.mode} · {m.aiDifficulty})
+                    Khởi Chiến ({m.mode} · {m.aiDifficulty})
                   </button>
                 </div>
               ))}

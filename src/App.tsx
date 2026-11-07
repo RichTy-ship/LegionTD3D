@@ -18,6 +18,7 @@ import {
   buyKingItem,
   castKingSkill,
   castLegionSpell,
+  continueIntoEndlessMode,
   createInitialMatchState,
   getMatchHistory,
   hireWorker,
@@ -48,6 +49,7 @@ export default function App() {
   const [selectedDifficulty, setSelectedDifficulty] = useState<AIDifficulty>('Normal');
   const [selectedFaction, setSelectedFaction] = useState<FactionId>('Inferno');
   const [selectedSpellId, setSelectedSpellId] = useState<string>('spell_golden_age');
+  const [endlessMode, setEndlessMode] = useState<boolean>(false);
   const [buildDuration, setBuildDuration] = useState<number>(
     ECONOMY_CONFIG.buildPhaseDurationSeconds
   );
@@ -112,17 +114,22 @@ export default function App() {
       difficulty?: AIDifficulty;
       faction?: FactionId;
       spellId?: string;
+      campaignMissionId?: string;
+      endlessMode?: boolean;
     }) => {
       const mode = override?.mode ?? selectedMode;
       const aiDifficulty = override?.difficulty ?? selectedDifficulty;
       const playerFaction = override?.faction ?? selectedFaction;
       const playerSpellId = override?.spellId ?? selectedSpellId;
+      const isEndless = override?.endlessMode ?? endlessMode;
 
       const fresh = createInitialMatchState({
         mode,
         aiDifficulty,
         playerFaction,
         playerSpellId,
+        endlessMode: isEndless,
+        campaignMissionId: override?.campaignMissionId,
       });
       fresh.buildPhaseDuration = buildDuration;
       fresh.phaseTimer = buildDuration;
@@ -145,6 +152,7 @@ export default function App() {
     },
     [
       buildDuration,
+      endlessMode,
       isAutoStart,
       selectedDifficulty,
       selectedFaction,
@@ -629,6 +637,8 @@ export default function App() {
           setSelectedFaction={setSelectedFaction}
           selectedSpellId={selectedSpellId}
           setSelectedSpellId={setSelectedSpellId}
+          endlessMode={endlessMode}
+          setEndlessMode={setEndlessMode}
           hasSavedMatch={hasSavedMatch}
           matchHistory={matchHistory}
           muted={muted}
@@ -637,12 +647,27 @@ export default function App() {
           setBuildDuration={setBuildDuration}
           onStartMatch={() => handleStartMatch()}
           onResumeSavedMatch={handleResumeSavedMatch}
-          onStartCampaignMission={(mode, difficulty, faction, spellId) => {
+          onStartCampaignMission={(
+            mode,
+            difficulty,
+            faction,
+            spellId,
+            campaignMissionId,
+            missionEndless
+          ) => {
             setSelectedMode(mode);
             setSelectedDifficulty(difficulty);
             setSelectedFaction(faction);
             setSelectedSpellId(spellId);
-            handleStartMatch({ mode, difficulty, faction, spellId });
+            setEndlessMode(Boolean(missionEndless));
+            handleStartMatch({
+              mode,
+              difficulty,
+              faction,
+              spellId,
+              campaignMissionId,
+              endlessMode: Boolean(missionEndless),
+            });
           }}
           onOpenAssetStudio={() => setShowAssetStudio(true)}
         />
@@ -760,6 +785,12 @@ export default function App() {
           onResume={() => setShellState('playing')}
           onRestart={() => handleStartMatch()}
           onReturnToTitle={() => setShellState('title')}
+          onContinueEndless={() => {
+            continueIntoEndlessMode(matchRef.current);
+            setShellState('playing');
+            showFeedback('Endless Ascension Unlocked! Entering Wave 22+');
+            syncHud();
+          }}
         />
       )}
     </>

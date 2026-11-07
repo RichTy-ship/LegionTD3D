@@ -62,9 +62,9 @@ export interface FighterConfig {
   id: string;
   name: string;
   faction: FactionId;
-  tier: 1 | 2;
-  baseFighterId?: string; // If tier 2, references the tier 1 base unit
-  cost: number; // Gold cost (for tier 2, this is the upgrade cost from tier 1)
+  tier: 1 | 2 | 3;
+  baseFighterId?: string; // If tier 2 or 3, references the base unit
+  cost: number; // Gold cost (for tier 2/3, this is the upgrade cost from previous tier)
   totalValue: number; // Total gold value on board
   hp: number;
   attackDamage: number;
@@ -126,7 +126,8 @@ export type WavePhaseName =
   | 'Mid Game'
   | 'Power Spike'
   | 'Late Game'
-  | 'Final Battle';
+  | 'Final Battle'
+  | 'Endless Ascension';
 
 export interface WaveConfig {
   waveNumber: number; // 1 to 21
@@ -352,6 +353,41 @@ export interface SkillVisualEffect {
   maxTtl: number;
 }
 
+export type LootDropType = 'GOLD_CACHE' | 'MYTHIUM_CRYSTAL' | 'BOSS_RELIC';
+
+export interface LootDrop {
+  id: string;
+  laneId: number;
+  x: number;
+  y: number;
+  type: LootDropType;
+  name: string;
+  goldAmount?: number;
+  mythiumAmount?: number;
+  itemId?: string;
+  color: string;
+  ttl: number;
+}
+
+export interface CampaignMissionPreset {
+  id: string;
+  actNumber: number;
+  subtitle: string;
+  title: string;
+  description: string;
+  lore: string;
+  modifierLabel: string;
+  mode: MatchMode;
+  aiDifficulty: AIDifficulty;
+  recommendedFaction: FactionId;
+  recommendedSpellId: string;
+  startingGoldBonus?: number;
+  startingMythiumBonus?: number;
+  startingWorkersBonus?: number;
+  kingHpBonus?: number;
+  endlessMode?: boolean;
+}
+
 export interface KingState {
   teamId: 0 | 1; // Team 0 = West Alliance (Player + Ally), Team 1 = East Pact (AI 1 + AI 2)
   name: string;
@@ -434,6 +470,8 @@ export interface LaneState {
   projectiles: Projectile[];
   floatingTexts: FloatingText[];
   skillEffects: SkillVisualEffect[];
+  lootDrops?: LootDrop[];
+  relicsCollected?: number;
 }
 
 export interface WaveResultSummary {
@@ -458,7 +496,9 @@ export interface MatchState {
   matchId: string;
   mode: MatchMode;
   aiDifficulty: AIDifficulty;
-  waveNumber: number; // 1..21
+  waveNumber: number; // 1..21 (or 22+ in Endless Mode)
+  endlessMode?: boolean;
+  campaignMissionId?: string;
   phase: TurnPhase;
   phaseTimer: number; // seconds remaining in current phase
   buildPhaseDuration: number;
@@ -486,4 +526,6 @@ export interface MatchHistoryRecord {
   finalIncome: number;
   westKingHpPercent: number;
   eastKingHpPercent: number;
+  isEndless?: boolean;
+  campaignMissionId?: string;
 }

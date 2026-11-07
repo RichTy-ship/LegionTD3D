@@ -5,8 +5,11 @@ import {
   AnimState3D,
   animateAsset3DModel,
   createCatalogAsset3D,
+  createFighter3DModel,
 } from './assets3d';
 import {
+  BOSS_DROP_RELIC_IDS,
+  CAMPAIGN_MISSIONS,
   ECONOMY_CONFIG,
   FACTIONS,
   FIGHTERS,
@@ -16,6 +19,7 @@ import {
   LEGION_SPELLS,
   MERCENARIES,
   WAVES,
+  getWaveConfig,
   validateGameData,
 } from './config';
 import {
@@ -32,6 +36,8 @@ import {
   buyKingItem,
   castKingSkill,
   castLegionSpell,
+  collectLootDrop,
+  continueIntoEndlessMode,
   createInitialMatchState,
   deserializeMatchState,
   hireWorker,
@@ -553,4 +559,108 @@ test('21. Free Hero King Movement, Active Skills [Q/E/R], Citadel Item Shop, Hea
   assert.equal(king.status, 'ALIVE', 'Respawned King must return to ALIVE status');
   assert.equal(king.hp, king.maxHp, 'Respawned King must have full HP');
   assert.ok(king.shield >= 280, 'Respawned King must receive Rebirth Shield');
+});
+
+test('22. Tier 3 Apex Ascended Evolution, Monster Loot Drops, Endless Wave Mode (Wave 22+) & 6-Act Campaign Modifiers', () => {
+  // 1. Verify all 8 Factions have Tier 3 Apex Sovereign Fighters & 3D Crown/Winged Model
+  const tier3Fighters = FIGHTERS.filter((f) => f.tier === 3);
+  assert.equal(tier3Fighters.length, 8, 'Must have 8 Tier 3 Apex Sovereign fighters (1 per Faction)');
+
+  const state = createInitialMatchState({
+    mode: '1v1',
+    aiDifficulty: 'Expert',
+    campaignMissionId: 'mission_clockwork_siege',
+  });
+  const player = state.lanes[0];
+  // Verify Campaign Act II starting modifiers (+2 Workers, +30 Mythium)
+  assert.equal(player.workers, ECONOMY_CONFIG.startingWorkers + 2, 'Campaign Act II must grant +2 starting Workers');
+  assert.equal(player.mythium, ECONOMY_CONFIG.startingMythium + 30, 'Campaign Act II must grant +30 starting Mythium');
+  assert.equal(CAMPAIGN_MISSIONS.length, 6, 'Must have 6 Story Campaign Missions');
+  assert.equal(BOSS_DROP_RELIC_IDS.length, 4, 'Must have 4 Boss-Drop Relics');
+
+  // 2. Evolve Tier 1 -> Tier 2 -> Tier 3 Apex Sovereign
+  player.gold = 2000;
+  buyAndPlaceFighter(state, 0, 'inf_cinder_guard', 2, 1);
+  const placed = player.placedFighters[0]!;
+  const evoT2 = upgradePlacedFighter(state, 0, placed.instanceId, 'inf_magma_juggernaut');
+  assert.equal(evoT2.ok, true, 'Must evolve Tier 1 into Tier 2');
+  const evoT3 = upgradePlacedFighter(state, 0, placed.instanceId, 'inf_cataclysm_overlord');
+  assert.equal(evoT3.ok, true, 'Must evolve Tier 2 into Tier 3 Apex Sovereign');
+  assert.equal(placed.fighterId, 'inf_cataclysm_overlord');
+  assert.equal(FIGHTER_MAP[placed.fighterId]?.tier, 3);
+
+  const t3Model = createFighter3DModel('inf_cataclysm_overlord');
+  const t3Body = t3Model.getObjectByName('bodyPivot');
+  assert.ok(t3Body && t3Body.children.length >= 10, 'Tier 3 3D model must include apex halo, gem, and winged pinions');
+
+  // 3. Boss Loot Relic Drop & Collection
+  state.waveNumber = 5; // Boss Wave 5
+  startBattlePhase(state);
+  const bossUnit = player.combatUnits.find((u) => u.isBoss && u.side === 'ATTACKER');
+  assert.ok(bossUnit, 'Wave 5 must spawn a Boss unit');
+
+  // Kill all attackers on all lanes including the boss by dealing massive damage and moving them into range
+  for (const ln of state.lanes) {
+    for (const foe of ln.combatUnits.filter((u) => u.side === 'ATTACKER')) {
+      foe.hp = 1;
+      foe.y = 350;
+    }
+  }
+  for (let i = 0; i < 80; i++) {
+    stepMatch(state, 0.05);
+    if (state.phase !== 'BATTLE') break;
+  }
+
+  // Either collected automatically during combat, present in lootDrops, or swept on wave completion
+  assert.ok(
+    (player.relicsCollected ?? 0) >= 1 ||
+      (player.lootDrops ?? []).some((d) => d.type === 'BOSS_RELIC') ||
+      state.kings[0].inventory.some((id: string) => BOSS_DROP_RELIC_IDS.includes(id)),
+    'Defeating a Boss must drop and award a Boss Relic to the Hero King'
+  );
+
+  // Manual loot drop collection test
+  player.lootDrops = [
+    {
+      id: 'test_drop_1',
+      laneId: 0,
+      x: 200,
+      y: 300,
+      type: 'GOLD_CACHE',
+      name: 'Imperial Gold Chest',
+      goldAmount: 55,
+      color: '#FBBF24',
+      ttl: 10,
+    },
+  ];
+  const goldBeforeDrop = player.gold;
+  const collectRes = collectLootDrop(state, 0, 'test_drop_1');
+  assert.equal(collectRes.ok, true);
+  assert.equal(player.gold, goldBeforeDrop + 55, 'Collecting Gold Cache must add gold to lane');
+
+  // 4. Endless Wave Mode (Wave 22+) & Procedural Raid Boss Scaling
+  state.waveNumber = 21;
+  state.phase = 'BATTLE';
+  resolveWaveCompletion(state);
+  assert.equal(state.phase, 'VICTORY', 'Standard mode ends in VICTORY after Wave 21');
+
+  continueIntoEndlessMode(state);
+  assert.equal(state.endlessMode, true, 'continueIntoEndlessMode must enable endlessMode');
+  assert.equal(state.waveNumber, 22, 'Must advance to Wave 22');
+  assert.equal(state.phase, 'BUILD', 'Must enter Wave 22 BUILD phase');
+
+  const wave24Cfg = getWaveConfig(24);
+  assert.equal(wave24Cfg.phaseName, 'Endless Ascension');
+  assert.equal(wave24Cfg.category, 'Boss', 'Every 3rd Endless wave (Wave 24) must be an Endless Raid Boss wave');
+  assert.ok(wave24Cfg.bossUnit && wave24Cfg.bossUnit.hp > WAVES[20].bossUnit!.hp, 'Endless Raid Boss HP must scale above Wave 21 Boss');
+
+  // 5. AI Tier 3 Evolution & Counter-Mercenary in Late/Endless Waves
+  const aiLane = state.lanes[1]!;
+  aiLane.gold = 1500;
+  aiLane.mythium = 300;
+  runLaneAIDecision(state, aiLane.laneId);
+  assert.ok(
+    aiLane.outboundMercenaries.length > 0 || aiLane.placedFighters.length > 0,
+    'Expert AI must actively deploy fighters/upgrades and counter-mercenaries in Endless waves'
+  );
 });

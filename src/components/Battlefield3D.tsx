@@ -35,7 +35,8 @@ import {
   getRunicAuraTexture,
   sculptAndSmoothAssetGroup,
 } from '../game/assets3d';
-import { ECONOMY_CONFIG, FIGHTER_MAP, KING_CONFIG, WAVES } from '../game/config';
+import { ECONOMY_CONFIG, FIGHTER_MAP, getWaveConfig, KING_CONFIG } from '../game/config';
+import { collectLootDrop } from '../game/engine';
 import { MatchState } from '../game/types';
 
 interface Battlefield3DProps {
@@ -251,6 +252,11 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
     rimLight.position.set(-18, 22, -26);
     scene.add(rimLight);
 
+    // Dynamic PointLight tracking Hero King & Active Skills
+    const kingPointLight = new THREE.PointLight('#FBBF24', 2.4, 18, 1.5);
+    kingPointLight.position.set(0, 3.2, 16);
+    scene.add(kingPointLight);
+
     // 5. Natural Canyon Bridge Terrain & Instanced Crystal Outcrops
     const terrainGroup = new THREE.Group();
     scene.add(terrainGroup);
@@ -266,6 +272,24 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
     abyssMesh.rotation.x = -Math.PI / 2;
     abyssMesh.position.y = -1.2;
     terrainGroup.add(abyssMesh);
+
+    // Phase-Reactive Glowing Magma / Aether Veins in the Canyon Abyss
+    const lavaVeinMat = new THREE.MeshStandardMaterial({
+      color: '#EA580C',
+      emissive: '#EA580C',
+      emissiveIntensity: 1.35,
+      roughness: 0.35,
+      metalness: 0.2,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const lavaVeinGeo = new THREE.PlaneGeometry(3.2, 76);
+    for (const side of [-1, 1]) {
+      const vein = new THREE.Mesh(lavaVeinGeo, lavaVeinMat);
+      vein.rotation.x = -Math.PI / 2;
+      vein.position.set(side * 16.8, -1.12, 0);
+      terrainGroup.add(vein);
+    }
 
     // Main Bastion Stone Bridge Causeway
     const bridgeW = BOARD_W * WORLD_SCALE;
@@ -720,7 +744,9 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
     const vfxRoot = new THREE.Group();
     scene.add(vfxRoot);
     const skillMeshMap = new Map<string, THREE.Group>();
+    const lootMeshMap = new Map<string, THREE.Group>();
     const projMeshMap = new Map<string, THREE.Mesh>();
+    const projLastPosMap = new Map<string, { wx: number; wz: number; color: string }>();
     const projPool: THREE.Mesh[] = [];
     const sharedProjGeo = new THREE.ConeGeometry(0.18, 0.56, 14);
     sharedProjGeo.rotateX(Math.PI / 2);
@@ -732,6 +758,51 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
         projMatCache.set(color, m);
       }
       return m;
+    };
+
+    // Pooled 3D Volumetric Particle Burst System (Zero GC in Combat Loop)
+    const maxParticles = 72;
+    const sharedParticleGeo = new THREE.OctahedronGeometry(0.13, 0);
+    const particlePool: {
+      mesh: THREE.Mesh;
+      vx: number;
+      vy: number;
+      vz: number;
+      ttl: number;
+      maxTtl: number;
+    }[] = [];
+    for (let i = 0; i < maxParticles; i++) {
+      const pMesh = new THREE.Mesh(sharedParticleGeo, getProjMat('#FBBF24'));
+      pMesh.visible = false;
+      vfxRoot.add(pMesh);
+      particlePool.push({ mesh: pMesh, vx: 0, vy: 0, vz: 0, ttl: 0, maxTtl: 0.45 });
+    }
+    let particleCursor = 0;
+    const spawnParticleBurst = (
+      wx: number,
+      wy: number,
+      wz: number,
+      color: string,
+      count: number,
+      speedScale = 1.0
+    ) => {
+      if (fpsBoostRef.current) return;
+      const mat = getProjMat(color);
+      for (let i = 0; i < count; i++) {
+        const p = particlePool[particleCursor % maxParticles];
+        particleCursor++;
+        const angle = (Math.PI * 2 * i) / count + (particleCursor % 5) * 0.2;
+        const speed = (1.8 + (i % 3) * 1.1) * speedScale;
+        p.mesh.material = mat;
+        p.mesh.position.set(wx, wy, wz);
+        p.mesh.scale.setScalar(1.0);
+        p.mesh.visible = true;
+        p.vx = Math.cos(angle) * speed;
+        p.vy = (2.2 + (i % 4) * 0.7) * speedScale;
+        p.vz = Math.sin(angle) * speed;
+        p.maxTtl = 0.38 + (i % 3) * 0.08;
+        p.ttl = p.maxTtl;
+      }
     };
 
     // Pre-warm shaders on GPU
@@ -802,6 +873,17 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
       if (!coords) return;
 
       const { bx, by } = coords;
+
+      // Click on any nearby 3D Loot Chest / Boss Relic to collect it immediately
+      if (lane.lootDrops && lane.lootDrops.length > 0) {
+        const clickedDrop = lane.lootDrops.find(
+          (d) => Math.hypot(d.x - bx, d.y - by) <= 44
+        );
+        if (clickedDrop) {
+          collectLootDrop(state, lane.laneId, clickedDrop.id);
+          return;
+        }
+      }
 
       if (e.button === 2 || e.shiftKey) {
         e.preventDefault();
@@ -1216,7 +1298,7 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
           phaseOffset: 2.1,
         });
 
-        const currentWaveCfg = WAVES[(state.waveNumber - 1) % WAVES.length] ?? WAVES[0];
+        const currentWaveCfg = getWaveConfig(state.waveNumber);
         const desiredWaveHerald =
           currentWaveCfg.category === 'Boss'
             ? 'phase_herald_boss'
@@ -1225,6 +1307,20 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
             : state.waveNumber >= 7
             ? 'phase_herald_mid'
             : 'phase_herald_early';
+
+        // Phase-Reactive Canyon Abyssal Lava / Aether Veins
+        const veinHex = state.endlessMode
+          ? '#A855F7'
+          : currentWaveCfg.category === 'Boss'
+          ? '#EF4444'
+          : state.waveNumber >= 14
+          ? '#F97316'
+          : state.waveNumber >= 7
+          ? '#06B6D4'
+          : '#3B82F6';
+        lavaVeinMat.color.set(veinHex);
+        lavaVeinMat.emissive.set(veinHex);
+        lavaVeinMat.emissiveIntensity = 1.15 + Math.sin(elapsed * 2.8) * 0.35;
         if (desiredWaveHerald !== currentWaveHeraldRef) {
           currentWaveHeraldRef = desiredWaveHerald;
           waveHeraldHolder.remove(activeWaveHerald3D);
@@ -1477,7 +1573,13 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
         }
       }
 
-      // Sync Batch 9 Volumetric 3D Hero King Active Skills ([Q], [E], [R])
+      // Sync Batch 9 Volumetric 3D Hero King Active Skills ([Q], [E], [R]) + Dynamic PointLight
+      kingPointLight.position.set(heroKing3D.position.x, 3.2, heroKing3D.position.z);
+      kingPointLight.intensity = hasActiveKingSkill ? 4.2 : 2.1 + Math.sin(elapsed * 3.5) * 0.3;
+      kingPointLight.color.set(
+        hasActiveKingSkill ? '#38BDF8' : state.endlessMode ? '#C084FC' : '#FBBF24'
+      );
+
       const activeSkillIds = new Set<string>();
       for (const fx of lane.skillEffects ?? []) {
         activeSkillIds.add(fx.id);
@@ -1492,6 +1594,8 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
           skillGroup = createKingSkillOrUpgrade3DModel(refId);
           vfxRoot.add(skillGroup);
           skillMeshMap.set(fx.id, skillGroup);
+          const sPos = boardToWorld(fx.x, fx.y);
+          spawnParticleBurst(sPos.wx, 0.6, sPos.wz, fx.color || '#38BDF8', 14, 1.35);
         }
         const { wx, wz } = boardToWorld(fx.x, fx.y);
         const progress = 1 - fx.ttl / fx.maxTtl;
@@ -1507,28 +1611,92 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
         }
       }
 
-      // Sync 3D Projectiles (Zero-Allocation Object Pool)
+      // Sync 3D Monster Loot Chests & Boss Relic Drops on the Battlefield
+      const activeLootIds = new Set<string>();
+      for (const drop of lane.lootDrops ?? []) {
+        activeLootIds.add(drop.id);
+        let lootGroup = lootMeshMap.get(drop.id);
+        if (!lootGroup) {
+          lootGroup =
+            drop.type === 'BOSS_RELIC'
+              ? createCitadelArmoryOrRoyalRelic3DModel('royal_relic_aegis_grail')
+              : createBattlefieldProp3DModel('prop_bounty_chest');
+          vfxRoot.add(lootGroup);
+          lootMeshMap.set(drop.id, lootGroup);
+          const dPos = boardToWorld(drop.x, drop.y);
+          spawnParticleBurst(dPos.wx, 0.5, dPos.wz, drop.color, 10, 1.1);
+        }
+        const { wx, wz } = boardToWorld(drop.x, drop.y);
+        lootGroup.position.set(wx, 0.12 + Math.abs(Math.sin(elapsed * 4.2)) * 0.22, wz);
+        lootGroup.scale.setScalar(drop.type === 'BOSS_RELIC' ? 0.95 : 0.78);
+        lootGroup.rotation.y = elapsed * 2.4;
+      }
+      for (const [id, lootGroup] of lootMeshMap.entries()) {
+        if (!activeLootIds.has(id)) {
+          spawnParticleBurst(
+            lootGroup.position.x,
+            0.6,
+            lootGroup.position.z,
+            '#FDE047',
+            8,
+            1.15
+          );
+          vfxRoot.remove(lootGroup);
+          lootMeshMap.delete(id);
+        }
+      }
+
+      // Sync 3D Projectiles (Zero-Allocation Object Pool + Directional Trajectory & Impact Bursts)
       const activeProjIds = new Set<string>();
       for (const proj of lane.projectiles ?? []) {
         activeProjIds.add(proj.id);
         let mesh = projMeshMap.get(proj.id);
+        const { wx, wz } = boardToWorld(proj.x, proj.y);
         if (!mesh) {
           mesh = projPool.pop() ?? new THREE.Mesh(sharedProjGeo, getProjMat(proj.color));
           mesh.material = getProjMat(proj.color);
           mesh.visible = true;
           vfxRoot.add(mesh);
           projMeshMap.set(proj.id, mesh);
+        } else {
+          const prev = projLastPosMap.get(proj.id);
+          if (prev && (Math.abs(wx - prev.wx) > 0.01 || Math.abs(wz - prev.wz) > 0.01)) {
+            mesh.rotation.y = Math.atan2(wx - prev.wx, wz - prev.wz);
+          }
         }
-        const { wx, wz } = boardToWorld(proj.x, proj.y);
         mesh.position.set(wx, 1.15, wz);
-        mesh.rotation.y += dt * 10;
+        projLastPosMap.set(proj.id, { wx, wz, color: proj.color });
       }
       for (const [id, mesh] of projMeshMap.entries()) {
         if (!activeProjIds.has(id)) {
+          const lastPos = projLastPosMap.get(id);
+          if (lastPos) {
+            spawnParticleBurst(lastPos.wx, 1.05, lastPos.wz, lastPos.color, 5, 0.85);
+            projLastPosMap.delete(id);
+          }
           mesh.visible = false;
           vfxRoot.remove(mesh);
           projPool.push(mesh);
           projMeshMap.delete(id);
+        }
+      }
+
+      // Tick Pooled 3D Volumetric Particle Bursts
+      for (let i = 0; i < maxParticles; i++) {
+        const p = particlePool[i];
+        if (p.ttl > 0) {
+          p.ttl -= dt;
+          if (p.ttl <= 0) {
+            p.mesh.visible = false;
+          } else {
+            p.mesh.position.x += p.vx * dt;
+            p.mesh.position.y = Math.max(0.05, p.mesh.position.y + p.vy * dt);
+            p.mesh.position.z += p.vz * dt;
+            p.vy -= 6.5 * dt;
+            p.mesh.rotation.x += dt * 8;
+            p.mesh.rotation.y += dt * 10;
+            p.mesh.scale.setScalar(Math.max(0.15, p.ttl / p.maxTtl));
+          }
         }
       }
 

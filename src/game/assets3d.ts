@@ -181,18 +181,18 @@ const BATCH_1_HERO_AND_CITADEL: AssetBatchItem[] = [
   },
 ];
 
-const BATCH_2_FIGHTERS: AssetBatchItem[] = FIGHTERS.map((f) => ({
+const BATCH_2_FIGHTERS: AssetBatchItem[] = FIGHTERS.filter((f) => f.tier <= 2).map((f) => ({
   id: `asset_fgt_${f.id}`,
   name: `${f.name} (${f.faction} T${f.tier})`,
   batchNumber: 2 as const,
   category: 'Legion Fighters' as const,
-  partsCount: f.tier === 2 ? 10 : 8,
+  partsCount: f.tier >= 2 ? 10 : 8,
   polyStyle: `${f.faction} ${f.role} · ${f.attackType}/${f.defenseType}`,
   description: `${f.ability.name}: ${f.ability.description} (${f.cost}g · HP ${f.hp} · DMG ${f.attackDamage}).`,
   faction: f.faction,
   previewType: 'FIGHTER' as const,
   refId: f.id,
-  isTier2: f.tier === 2,
+  isTier2: f.tier >= 2,
 }));
 
 const BATCH_3_MERCS_AND_BOSSES: AssetBatchItem[] = [
@@ -258,7 +258,7 @@ const BATCH_3_MERCS_AND_BOSSES: AssetBatchItem[] = [
 ];
 
 const BATCH_4_RELICS_AND_VFX: AssetBatchItem[] = [
-  ...KING_ITEMS.map((item) => ({
+  ...KING_ITEMS.slice(0, 8).map((item) => ({
     id: `asset_relic_${item.id}`,
     name: `${item.name} (${item.goldCost}g Relic)`,
     batchNumber: 4 as const,
@@ -4288,20 +4288,28 @@ export function createFighter3DModel(fighterId: string): THREE.Group {
   const cfg = FIGHTER_MAP[fighterId];
   const faction: FactionId = cfg?.faction ?? 'Inferno';
   const role: FighterRole = cfg?.role ?? 'Tank';
-  const isTier2 = cfg?.tier === 2;
+  const isTier3 = cfg?.tier === 3;
+  const isTier2 = cfg?.tier === 2 || isTier3;
   const primaryHex = cfg?.color ?? FACTIONS[faction].primaryColor;
   const accentHex = cfg?.accentColor ?? FACTIONS[faction].secondaryColor;
 
   const root = new THREE.Group();
   root.name = `Fighter_${fighterId}`;
 
-  const scale = isTier2 ? 1.24 : 1.0;
+  const scale = isTier3 ? 1.42 : isTier2 ? 1.24 : 1.0;
   addContactShadow(root, 0.95 * scale);
 
-  const primaryMat = getPBRMaterial(primaryHex, 0.3, 0.76);
-  const accentMat = getPBRMaterial(accentHex, 0.18, 0.9, accentHex, isTier2 ? 0.38 : 0.16);
+  const primaryMat = getPBRMaterial(primaryHex, isTier3 ? 0.2 : 0.3, isTier3 ? 0.88 : 0.76);
+  const accentMat = getPBRMaterial(
+    accentHex,
+    0.15,
+    0.92,
+    accentHex,
+    isTier3 ? 0.55 : isTier2 ? 0.38 : 0.16
+  );
   const darkMetalMat = getPBRMaterial('#1E293B', 0.58, 0.48);
-  const glowMat = getPBRMaterial(accentHex, 0.1, 0.95, accentHex, 0.62);
+  const glowMat = getPBRMaterial(accentHex, 0.08, 0.95, accentHex, isTier3 ? 0.82 : 0.62);
+  const goldTrimMat = getPBRMaterial('#FBBF24', 0.14, 0.95, '#F59E0B', 0.45);
 
   // 1. Tactical Base Pedestal (Hexagonal Runic Plinth for Tier 2, Cylindrical for Tier 1)
   const baseGeo = new THREE.CylinderGeometry(
@@ -4505,15 +4513,41 @@ export function createFighter3DModel(fighterId: string): THREE.Group {
     weaponGroup.add(orb);
   }
 
-  // 10. Tier-2 Ascended Halo Ring
+  // 10. Tier-2 & Tier-3 Ascended Halo Rings & Sovereign Pinions
   if (isTier2) {
     const halo = new THREE.Mesh(
       new THREE.TorusGeometry(0.54 * scale, 0.05 * scale, 8, 24),
-      glowMat
+      isTier3 ? goldTrimMat : glowMat
     );
     halo.position.set(0, 1.58 * scale, -0.34 * scale);
     halo.name = 'tier2Halo';
     bodyGroup.add(halo);
+  }
+  if (isTier3) {
+    const outerHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.76 * scale, 0.045 * scale, 8, 28),
+      glowMat
+    );
+    outerHalo.position.set(0, 1.62 * scale, -0.38 * scale);
+    outerHalo.rotation.z = Math.PI / 4;
+    bodyGroup.add(outerHalo);
+
+    const apexGem = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.22 * scale, 0),
+      goldTrimMat
+    );
+    apexGem.position.set(0, 2.25 * scale, 0);
+    bodyGroup.add(apexGem);
+
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(
+        new THREE.ConeGeometry(0.2 * scale, 0.95 * scale, 4),
+        goldTrimMat
+      );
+      wing.position.set(side * 0.68 * scale, 1.52 * scale, -0.28 * scale);
+      wing.rotation.z = side * -0.52;
+      bodyGroup.add(wing);
+    }
   }
 
   return sculptAndSmoothAssetGroup(root);

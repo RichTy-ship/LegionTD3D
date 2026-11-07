@@ -1,5 +1,7 @@
 import {
   AI_DIFFICULTY_CONFIG,
+  BOSS_DROP_RELIC_IDS,
+  CAMPAIGN_MISSIONS,
   ECONOMY_CONFIG,
   FACTIONS,
   FIGHTERS,
@@ -13,6 +15,7 @@ import {
   MERCENARY_MAP,
   SPELL_MAP,
   WAVE_MAP,
+  getWaveConfig,
 } from './config';
 import { calculateDamage, getTypeMultiplier } from './damage';
 import {
@@ -20,9 +23,11 @@ import {
   CombatUnit,
   FactionId,
   FighterConfig,
+  KingItemConfig,
   KingSkillKey,
   KingState,
   LaneState,
+  LootDrop,
   MatchHistoryRecord,
   MatchMode,
   MatchState,
@@ -37,7 +42,7 @@ function nextId(prefix: string): string {
 }
 
 export function getRecommendedValueForWave(waveNumber: number): number {
-  const wave = WAVE_MAP[waveNumber];
+  const wave = getWaveConfig(waveNumber);
   if (!wave) return 200;
   return Math.round(160 + (waveNumber - 1) * 115 + Math.pow(waveNumber, 1.65) * 18);
 }
@@ -129,6 +134,8 @@ export function createInitialLane(
     projectiles: [],
     floatingTexts: [],
     skillEffects: [],
+    lootDrops: [],
+    relicsCollected: 0,
   };
 }
 
@@ -137,11 +144,18 @@ export function createInitialMatchState(options?: {
   aiDifficulty?: AIDifficulty;
   playerFaction?: FactionId;
   playerSpellId?: string;
+  endlessMode?: boolean;
+  campaignMissionId?: string;
 }): MatchState {
-  const mode = options?.mode ?? '2v2';
-  const aiDifficulty = options?.aiDifficulty ?? 'Normal';
-  const playerFaction = options?.playerFaction ?? 'Inferno';
-  const playerSpellId = options?.playerSpellId ?? 'spell_golden_age';
+  const mission = options?.campaignMissionId
+    ? CAMPAIGN_MISSIONS.find((m) => m.id === options.campaignMissionId)
+    : undefined;
+
+  const mode = options?.mode ?? mission?.mode ?? '2v2';
+  const aiDifficulty = options?.aiDifficulty ?? mission?.aiDifficulty ?? 'Normal';
+  const playerFaction = options?.playerFaction ?? mission?.recommendedFaction ?? 'Inferno';
+  const playerSpellId = options?.playerSpellId ?? mission?.recommendedSpellId ?? 'spell_golden_age';
+  const endlessMode = options?.endlessMode ?? mission?.endlessMode ?? false;
 
   const allFactions: FactionId[] = [
     'Inferno',
@@ -169,11 +183,37 @@ export function createInitialMatchState(options?: {
           createInitialLane(1, 'Grand Tactician (AI)', 1, false, aiDifficulty, pickFaction(3), 'spell_meteor_storm'),
         ];
 
+  const kings: [KingState, KingState] = [createInitialKing(0), createInitialKing(1)];
+
+  // Apply Campaign Mission Modifiers if active
+  if (mission) {
+    if (mission.startingGoldBonus) {
+      lanes[0].gold += mission.startingGoldBonus;
+    }
+    if (mission.startingMythiumBonus) {
+      lanes[0].mythium += mission.startingMythiumBonus;
+    }
+    if (mission.startingWorkersBonus) {
+      lanes[0].workers = Math.min(
+        ECONOMY_CONFIG.maxWorkers,
+        lanes[0].workers + mission.startingWorkersBonus
+      );
+    }
+    if (mission.kingHpBonus) {
+      kings[0].maxHp += mission.kingHpBonus;
+      kings[0].hp += mission.kingHpBonus;
+      kings[0].citadelMaxHp += mission.kingHpBonus;
+      kings[0].citadelHp += mission.kingHpBonus;
+    }
+  }
+
   return {
     matchId: nextId('match'),
     mode,
     aiDifficulty,
     waveNumber: 1,
+    endlessMode,
+    campaignMissionId: mission?.id ?? options?.campaignMissionId,
     phase: 'BUILD',
     phaseTimer: ECONOMY_CONFIG.buildPhaseDurationSeconds,
     buildPhaseDuration: ECONOMY_CONFIG.buildPhaseDurationSeconds,
@@ -181,12 +221,16 @@ export function createInitialMatchState(options?: {
     battleElapsedSeconds: 0,
     simSpeed: 1,
     lanes,
-    kings: [createInitialKing(0), createInitialKing(1)],
+    kings,
     activeViewedLaneId: 0,
     lastWaveResult: null,
     winnerTeam: null,
     combatLogs: [
-      'Wave 1 Build Phase: Control your Hero King with WASD or Right-Click, cast Skills [Q/E/R], and protect the Citadel!',
+      mission
+        ? `${mission.subtitle} — ${mission.title}: ${mission.modifierLabel}!`
+        : endlessMode
+        ? 'Endless Ascension Mode Active! Survive beyond Wave 21 and harvest Boss Relics!'
+        : 'Wave 1 Build Phase: Control your Hero King with WASD or Right-Click, cast Skills [Q/E/R], and protect the Citadel!',
     ],
     hitstopTimer: 0,
   };
@@ -420,48 +464,15 @@ export function castKingSkill(
   return { ok: true };
 }
 
-/**
- * Purchases an Item for the Hero King or upgrades the Citadel Healing Aura from the Main Base Armory.
- */
-export function buyKingItem(
-  state: MatchState,
-  laneId: number,
-  itemId: string
-): ActionResult {
-  const lane = state.lanes[laneId];
-  if (!lane) return { ok: false, reason: 'Invalid lane.' };
-  const king = state.kings[lane.teamId];
-  if (!king) return { ok: false, reason: 'King not found.' };
-
-  const item = KING_ITEM_MAP[itemId];
-  if (!item) return { ok: false, reason: 'Unknown item ID.' };
-
-  if (
-    item.category !== 'Citadel' &&
-    king.inventory.length >= ECONOMY_CONFIG.kingMaxInventorySlots
-  ) {
-    return {
-      ok: false,
-      reason: `King inventory is full (${ECONOMY_CONFIG.kingMaxInventorySlots} items max).`,
-    };
-  }
-
-  if (lane.gold < item.goldCost) {
-    return {
-      ok: false,
-      reason: `Insufficient Gold for ${item.name} (requires ${item.goldCost}g).`,
-    };
-  }
-
-  lane.gold -= item.goldCost;
-
+export function applyItemBonusesToKing(king: KingState, item: KingItemConfig): void {
   if (item.category !== 'Citadel') {
-    king.inventory.push(item.id);
+    if (king.inventory.length < ECONOMY_CONFIG.kingMaxInventorySlots) {
+      king.inventory.push(item.id);
+    }
   } else {
     king.healingAuraLevel += 1;
   }
 
-  // Apply item bonuses to Hero King & Citadel Core
   if (item.bonusAttackDamage) king.attackDamage += item.bonusAttackDamage;
   if (item.bonusMaxHp) {
     king.maxHp += item.bonusMaxHp;
@@ -497,8 +508,100 @@ export function buyKingItem(
     king.citadelMaxHp += item.bonusCitadelMaxHp;
     king.citadelHp = Math.min(king.citadelMaxHp, king.citadelHp + item.bonusCitadelMaxHp);
   }
+}
+
+/**
+ * Purchases an Item for the Hero King or upgrades the Citadel Healing Aura from the Main Base Armory.
+ */
+export function buyKingItem(
+  state: MatchState,
+  laneId: number,
+  itemId: string
+): ActionResult {
+  const lane = state.lanes[laneId];
+  if (!lane) return { ok: false, reason: 'Invalid lane.' };
+  const king = state.kings[lane.teamId];
+  if (!king) return { ok: false, reason: 'King not found.' };
+
+  const item = KING_ITEM_MAP[itemId];
+  if (!item) return { ok: false, reason: 'Unknown item ID.' };
+
+  if (
+    item.category !== 'Citadel' &&
+    king.inventory.length >= ECONOMY_CONFIG.kingMaxInventorySlots
+  ) {
+    return {
+      ok: false,
+      reason: `King inventory is full (${ECONOMY_CONFIG.kingMaxInventorySlots} items max).`,
+    };
+  }
+
+  if (lane.gold < item.goldCost) {
+    return {
+      ok: false,
+      reason: `Insufficient Gold for ${item.name} (requires ${item.goldCost}g).`,
+    };
+  }
+
+  lane.gold -= item.goldCost;
+  applyItemBonusesToKing(king, item);
 
   state.combatLogs.unshift(`${lane.name} purchased ${item.name} from the Citadel Armory!`);
+  return { ok: true };
+}
+
+/**
+ * Collects a battlefield LootDrop (Gold Cache, Mythium Crystal, or Boss Relic).
+ */
+export function collectLootDrop(
+  state: MatchState,
+  laneId: number,
+  dropId: string
+): ActionResult {
+  const lane = state.lanes[laneId];
+  if (!lane || !lane.lootDrops) return { ok: false, reason: 'No loot drops on lane.' };
+
+  const idx = lane.lootDrops.findIndex((d) => d.id === dropId);
+  if (idx === -1) return { ok: false, reason: 'Loot drop already collected.' };
+
+  const drop = lane.lootDrops[idx];
+  lane.lootDrops.splice(idx, 1);
+
+  const king = state.kings[lane.teamId];
+  if (drop.goldAmount) {
+    lane.gold += drop.goldAmount;
+  }
+  if (drop.mythiumAmount) {
+    lane.mythium += drop.mythiumAmount;
+  }
+  if (drop.itemId && king) {
+    const item = KING_ITEM_MAP[drop.itemId];
+    if (item) {
+      applyItemBonusesToKing(king, item);
+      lane.relicsCollected = (lane.relicsCollected ?? 0) + 1;
+    }
+  }
+
+  lane.floatingTexts.push({
+    id: nextId('ft_loot'),
+    laneId: lane.laneId,
+    x: drop.x,
+    y: drop.y - 16,
+    text:
+      drop.type === 'BOSS_RELIC'
+        ? `★ RELIC: ${drop.name}!`
+        : drop.type === 'MYTHIUM_CRYSTAL'
+        ? `+${drop.mythiumAmount} MYTHIUM!`
+        : `+${drop.goldAmount}g SPOILS!`,
+    color: drop.color,
+    ttl: 1.2,
+    maxTtl: 1.2,
+    isCrit: true,
+  });
+
+  state.combatLogs.unshift(
+    `${lane.name} claimed battlefield spoils: ${drop.name}!`
+  );
   return { ok: true };
 }
 
@@ -964,7 +1067,8 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
   if (!lane || lane.isHuman || state.phase !== 'BUILD') return;
 
   const diff = AI_DIFFICULTY_CONFIG[lane.aiDifficulty];
-  const wave = WAVE_MAP[state.waveNumber] ?? WAVE_MAP[1];
+  const wave = getWaveConfig(state.waveNumber);
+  const nextWave = getWaveConfig(state.waveNumber + 1);
   const recommendedVal = getRecommendedValueForWave(state.waveNumber);
 
   // 1. Worker Scaling Decision
@@ -987,16 +1091,18 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
   const ownKing = state.kings[lane.teamId];
   if (
     state.waveNumber >= 4 &&
-    ownKing.inventory.length < Math.floor(state.waveNumber / 3) &&
+    ownKing.inventory.length < Math.min(6, Math.floor(state.waveNumber / 3)) &&
     lane.gold >= 180
   ) {
-    const affordableItem = KING_ITEMS.find((it) => it.goldCost <= lane.gold - 90);
+    const affordableItem = KING_ITEMS.find(
+      (it) => it.goldCost <= lane.gold - 90 && !ownKing.inventory.includes(it.id)
+    );
     if (affordableItem) {
       buyKingItem(state, laneId, affordableItem.id);
     }
   }
 
-  // 3. Upgrade Existing Fighters (Tier 1 -> Tier 2)
+  // 3. Upgrade Existing Fighters (Tier 1 -> Tier 2 -> Tier 3 Apex Sovereigns)
   if (state.waveNumber >= 3 && lane.placedFighters.length >= 2) {
     for (const placed of lane.placedFighters) {
       const cfg = FIGHTER_MAP[placed.fighterId];
@@ -1006,19 +1112,24 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
         .map((id) => FIGHTER_MAP[id])
         .filter((u): u is FighterConfig => Boolean(u))
         .sort((a, b) => {
-          const scoreA = scoreFighterAgainstWave(a, wave.attackType, wave.defenseType, diff.counterWeight);
-          const scoreB = scoreFighterAgainstWave(b, wave.attackType, wave.defenseType, diff.counterWeight);
+          const scoreA =
+            scoreFighterAgainstWave(a, wave.attackType, wave.defenseType, diff.counterWeight) * 0.7 +
+            scoreFighterAgainstWave(a, nextWave.attackType, nextWave.defenseType, diff.counterWeight) * 0.3;
+          const scoreB =
+            scoreFighterAgainstWave(b, wave.attackType, wave.defenseType, diff.counterWeight) * 0.7 +
+            scoreFighterAgainstWave(b, nextWave.attackType, nextWave.defenseType, diff.counterWeight) * 0.3;
           return scoreB - scoreA;
         });
 
       const bestUpgrade = sortedUpgrades[0];
-      if (bestUpgrade && lane.gold >= bestUpgrade.cost && state.waveNumber >= 3) {
+      const minWaveForTier = bestUpgrade?.tier === 3 ? 7 : 3;
+      if (bestUpgrade && lane.gold >= bestUpgrade.cost && state.waveNumber >= minWaveForTier) {
         upgradePlacedFighter(state, laneId, placed.instanceId, bestUpgrade.id);
       }
     }
   }
 
-  // 4. Buy & Place New Tier-1 Fighters
+  // 4. Buy & Place New Tier-1 Fighters (with Lookahead Counter-Matrix & Synergy Preference)
   const tier1Fighters = FIGHTERS.filter((f) => f.tier === 1);
   let safetyLoop = 0;
   while (lane.gold >= 45 && safetyLoop < 15) {
@@ -1029,13 +1140,21 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
     const tankCount = lane.placedFighters.filter(
       (p) => FIGHTER_MAP[p.fighterId]?.role === 'Tank'
     ).length;
+    const aoeCount = lane.placedFighters.filter(
+      (p) => FIGHTER_MAP[p.fighterId]?.role === 'AoE'
+    ).length;
     const needTank = tankCount < Math.max(1, Math.ceil(lane.placedFighters.length * 0.35));
+    const needAoE =
+      (wave.category === 'Swarm' || nextWave.category === 'Swarm') && aoeCount < 2;
 
     const scored = affordable
       .map((f) => {
-        let score = scoreFighterAgainstWave(f, wave.attackType, wave.defenseType, diff.counterWeight);
-        if (f.faction === lane.selectedFaction) score += 0.25;
+        let score =
+          scoreFighterAgainstWave(f, wave.attackType, wave.defenseType, diff.counterWeight) * 0.72 +
+          scoreFighterAgainstWave(f, nextWave.attackType, nextWave.defenseType, diff.counterWeight) * 0.28;
+        if (f.faction === lane.selectedFaction) score += 0.32;
         if (needTank && f.role === 'Tank') score += 0.45;
+        if (needAoE && f.role === 'AoE') score += 0.4;
         return { fighter: f, score };
       })
       .sort((a, b) => b.score - a.score);
@@ -1050,7 +1169,7 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
     if (!bought.ok) break;
   }
 
-  // 5. Mythium Spending: Mercenary Sends & King Upgrades
+  // 5. Mythium Spending: Tactical Counter-Mercenary Sends & King Upgrades
   const citadelHpRatio = ownKing.citadelHp / ownKing.citadelMaxHp;
   if (citadelHpRatio < 0.55 && lane.mythium >= ECONOMY_CONFIG.kingUpgradeMythiumCost) {
     upgradeKing(
@@ -1060,20 +1179,37 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
     );
   }
 
-  const isNextWaveSpike = [5, 10, 15, 20, 21].includes(state.waveNumber);
+  const isSpikeWave =
+    wave.category === 'Boss' ||
+    [5, 8, 10, 13, 15, 18, 20, 21].includes(state.waveNumber) ||
+    (state.waveNumber > 21 && state.waveNumber % 3 === 0);
+  const isPreSpikeHoldWave =
+    !isSpikeWave &&
+    ([4, 7, 9, 12, 14, 17, 19].includes(state.waveNumber) ||
+      (state.waveNumber > 21 && (state.waveNumber + 1) % 3 === 0));
+
   const shouldSaveForSpike =
     (diff.mercTimingDiscipline === 'PowerSpike' || diff.mercTimingDiscipline === 'Coordinated') &&
-    !isNextWaveSpike &&
-    [4, 9, 14, 19].includes(state.waveNumber);
+    isPreSpikeHoldWave;
 
   if (!shouldSaveForSpike) {
-    const sortedMercs = [...MERCENARIES].sort((a, b) => b.mythiumCost - a.mythiumCost);
+    const targetEnemyLaneId = getTargetEnemyLaneId(state, laneId);
+    const targetEnemyLane = state.lanes[targetEnemyLaneId] ?? state.lanes[0];
     let mercLoop = 0;
-    while (lane.mythium >= 20 && mercLoop < 10) {
+    while (lane.mythium >= 20 && mercLoop < 12) {
       mercLoop += 1;
-      const affordableMerc = sortedMercs.find((m) => m.mythiumCost <= lane.mythium);
-      if (!affordableMerc) break;
-      const res = queueMercenary(state, laneId, affordableMerc.id, 1);
+      const affordableMercs = MERCENARIES.filter((m) => m.mythiumCost <= lane.mythium);
+      if (affordableMercs.length === 0) break;
+
+      const bestMerc = chooseCounterMercenaryForTarget(
+        state,
+        affordableMercs,
+        targetEnemyLane,
+        wave,
+        diff.counterWeight
+      );
+      if (!bestMerc) break;
+      const res = queueMercenary(state, laneId, bestMerc.id, 1);
       if (!res.ok) break;
     }
   }
@@ -1085,6 +1221,63 @@ export function runLaneAIDecision(state: MatchState, laneId: number): void {
   ) {
     castLegionSpell(state, laneId);
   }
+}
+
+function chooseCounterMercenaryForTarget(
+  state: MatchState,
+  affordableMercs: typeof MERCENARIES,
+  targetLane: LaneState,
+  wave: ReturnType<typeof getWaveConfig>,
+  counterWeight: number
+): (typeof MERCENARIES)[number] | undefined {
+  if (affordableMercs.length === 0) return undefined;
+
+  // Analyze target opponent's defensive army
+  const enemyConfigs = targetLane.placedFighters
+    .map((p) => FIGHTER_MAP[p.fighterId])
+    .filter((f): f is FighterConfig => Boolean(f));
+  const avgEnemyArmor =
+    enemyConfigs.length > 0
+      ? enemyConfigs.reduce((s, f) => s + f.armor, 0) / enemyConfigs.length
+      : 6;
+  const enemyAoECount = enemyConfigs.filter((f) => f.role === 'AoE').length;
+  const enemyTankDefType =
+    enemyConfigs.find((f) => f.role === 'Tank')?.defenseType ?? 'Heavy';
+  const targetKing = state.kings[targetLane.teamId];
+  const enemyCitadelLow = targetKing
+    ? targetKing.citadelHp / targetKing.citadelMaxHp < 0.55
+    : false;
+
+  const scored = affordableMercs.map((merc) => {
+    let score = merc.mythiumCost * 0.04;
+    // Counter target frontline defense type
+    const atkMult = getTypeMultiplier(merc.attackType, enemyTankDefType);
+    score += (atkMult - 1.0) * 3.2 * counterWeight;
+
+    // Counter high-armor setups with ArmorBreak or MagicShield
+    if (avgEnemyArmor >= 9 && merc.specialEffect === 'ArmorBreak') {
+      score += 1.8 * counterWeight;
+    }
+    // Punish low-AoE setups with fast Evasion / Swarm scouts
+    if (enemyAoECount === 0 && (merc.group === 'Scout' || merc.specialEffect === 'Evasion')) {
+      score += 1.4 * counterWeight;
+    }
+    // Amplify Boss waves with AttackAura or HealAllies
+    if (
+      wave.category === 'Boss' &&
+      (merc.specialEffect === 'AttackAura' || merc.specialEffect === 'HealAllies')
+    ) {
+      score += 2.1 * counterWeight;
+    }
+    // Finish off damaged enemy Citadel with SiegeKing mercs
+    if (enemyCitadelLow && merc.specialEffect === 'SiegeKing') {
+      score += 2.4 * counterWeight;
+    }
+    return { merc, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0]?.merc;
 }
 
 function scoreFighterAgainstWave(
@@ -1173,7 +1366,7 @@ export function startBattlePhase(state: MatchState): void {
     sender.outboundMercenaries = [];
   }
 
-  const wave = WAVE_MAP[state.waveNumber] ?? WAVE_MAP[1];
+  const wave = getWaveConfig(state.waveNumber);
   state.phase = 'BATTLE';
   state.phaseTimer = 0;
   state.battleElapsedSeconds = 0;
@@ -1183,6 +1376,7 @@ export function startBattlePhase(state: MatchState): void {
     lane.projectiles = [];
     lane.floatingTexts = [];
     lane.skillEffects = [];
+    lane.lootDrops = [];
     lane.leaksThisWave = 0;
     lane.clearedThisWave = false;
 
@@ -1225,7 +1419,7 @@ export function startBattlePhase(state: MatchState): void {
         ownerLaneId: lane.laneId,
         x: unitX,
         y: unitY,
-        radius: cfg.tier === 2 ? 15 : 12,
+        radius: cfg.tier === 3 ? 18 : cfg.tier === 2 ? 15 : 12,
         hp: maxHp,
         maxHp,
         shield,
@@ -1584,7 +1778,20 @@ function stepHeroKing(state: MatchState, king: KingState, dt: number): void {
     }
   }
 
-  // 5. During BATTLE phase, Hero King engages nearby attackers on the primary lane
+  // 5. Auto-collect nearby Loot Drops on the primary lane
+  if (primaryLane.lootDrops && primaryLane.lootDrops.length > 0) {
+    for (let i = primaryLane.lootDrops.length - 1; i >= 0; i--) {
+      const drop = primaryLane.lootDrops[i];
+      if (!drop) continue;
+      drop.ttl -= dt;
+      const distToDrop = Math.hypot(drop.x - king.x, drop.y - king.y);
+      if (distToDrop <= 85 || drop.ttl <= 0) {
+        collectLootDrop(state, primaryLane.laneId, drop.id);
+      }
+    }
+  }
+
+  // 6. During BATTLE phase, Hero King engages nearby attackers on the primary lane
   if (state.phase === 'BATTLE') {
     const attackers = primaryLane.combatUnits.filter(
       (u) => u.side === 'ATTACKER' && !u.isDead && !u.hasLeaked
@@ -2388,6 +2595,48 @@ function handleUnitDeath(
         placed.kills += 1;
       }
     }
+
+    // Spawn 3D Loot Chests & Boss Relics on the battlefield
+    if (!lane.lootDrops) lane.lootDrops = [];
+    if (victim.isBoss) {
+      const relicPool = BOSS_DROP_RELIC_IDS.filter(
+        (id) => !state.kings[lane.teamId]?.inventory.includes(id)
+      );
+      const selectedRelicId =
+        relicPool.length > 0
+          ? relicPool[state.waveNumber % relicPool.length]
+          : BOSS_DROP_RELIC_IDS[state.waveNumber % BOSS_DROP_RELIC_IDS.length];
+      const relicCfg = selectedRelicId ? KING_ITEM_MAP[selectedRelicId] : undefined;
+      lane.lootDrops.push({
+        id: nextId(`loot_boss_${lane.laneId}`),
+        laneId: lane.laneId,
+        x: victim.x,
+        y: Math.max(90, Math.min(480, victim.y)),
+        type: 'BOSS_RELIC',
+        name: relicCfg ? relicCfg.name : 'Ancient Boss Relic',
+        goldAmount: Math.round(45 + state.waveNumber * 4),
+        itemId: selectedRelicId,
+        color: relicCfg?.accentColor ?? '#F59E0B',
+        ttl: 18.0,
+      });
+    } else if (victim.isMercenary || idCounter % 7 === 0) {
+      const isMythium = victim.isMercenary || idCounter % 2 === 0;
+      const amount = isMythium
+        ? Math.round(14 + state.waveNumber * 1.5)
+        : Math.round(12 + state.waveNumber * 1.8);
+      lane.lootDrops.push({
+        id: nextId(`loot_${lane.laneId}`),
+        laneId: lane.laneId,
+        x: victim.x,
+        y: Math.max(90, Math.min(480, victim.y)),
+        type: isMythium ? 'MYTHIUM_CRYSTAL' : 'GOLD_CACHE',
+        name: isMythium ? 'Void Mythium Cache' : 'Imperial Gold Chest',
+        goldAmount: isMythium ? undefined : amount,
+        mythiumAmount: isMythium ? amount : undefined,
+        color: isMythium ? '#A855F7' : '#FBBF24',
+        ttl: 14.0,
+      });
+    }
   }
 }
 
@@ -2437,9 +2686,19 @@ function handleEnemyLeakToCitadel(
 // ============================================================================
 
 export function resolveWaveCompletion(state: MatchState): void {
-  const wave = WAVE_MAP[state.waveNumber] ?? WAVE_MAP[1];
+  const wave = getWaveConfig(state.waveNumber);
   const westKing = state.kings[0];
   const eastKing = state.kings[1];
+
+  // Sweep & auto-collect any remaining loot drops on the field
+  for (const lane of state.lanes) {
+    if (lane.lootDrops && lane.lootDrops.length > 0) {
+      const remainingIds = lane.lootDrops.map((d) => d.id);
+      for (const dropId of remainingIds) {
+        collectLootDrop(state, lane.laneId, dropId);
+      }
+    }
+  }
 
   // 1. Check if either or both Main Bases (Citadel Cores) were destroyed
   if (westKing.citadelHp <= 0 || eastKing.citadelHp <= 0) {
@@ -2524,7 +2783,7 @@ export function resolveWaveCompletion(state: MatchState): void {
     eastKingHp: eastKing.citadelHp,
   };
 
-  if (state.waveNumber >= 21) {
+  if (state.waveNumber >= 21 && !state.endlessMode) {
     const westPct = westKing.citadelHp / westKing.citadelMaxHp;
     const eastPct = eastKing.citadelHp / eastKing.citadelMaxHp;
     if (Math.abs(westPct - eastPct) < 0.001) {
@@ -2552,7 +2811,7 @@ export function resolveWaveCompletion(state: MatchState): void {
 }
 
 export function advanceToNextWaveBuildPhase(state: MatchState): void {
-  if (state.waveNumber >= 21) return;
+  if (state.waveNumber >= 21 && !state.endlessMode) return;
   state.waveNumber += 1;
   state.phase = 'BUILD';
   state.phaseTimer = state.buildPhaseDuration;
@@ -2565,16 +2824,26 @@ export function advanceToNextWaveBuildPhase(state: MatchState): void {
     lane.projectiles = [];
     lane.floatingTexts = [];
     lane.skillEffects = [];
+    lane.lootDrops = [];
     lane.inboundMercenaries = [];
     lane.leaksThisWave = 0;
   }
 
-  const nextWave = WAVE_MAP[state.waveNumber];
+  const nextWave = getWaveConfig(state.waveNumber);
   if (nextWave) {
     state.combatLogs.unshift(
       `Wave ${state.waveNumber} Build Phase: Prepare for ${nextWave.name} (${nextWave.defenseType} Armor / ${nextWave.attackType} Attack).`
     );
   }
+}
+
+export function continueIntoEndlessMode(state: MatchState): void {
+  state.endlessMode = true;
+  state.winnerTeam = null;
+  advanceToNextWaveBuildPhase(state);
+  state.combatLogs.unshift(
+    `ENDLESS ASCENSION UNLOCKED! Entering Wave ${state.waveNumber} — Infinite scaling activated!`
+  );
 }
 
 // ============================================================================
@@ -2655,6 +2924,8 @@ export function recordMatchHistory(state: MatchState): void {
       eastKingHpPercent: Math.round(
         (state.kings[1].citadelHp / state.kings[1].citadelMaxHp) * 100
       ),
+      isEndless: Boolean(state.endlessMode),
+      campaignMissionId: state.campaignMissionId,
     };
 
     const existing = getMatchHistory();
