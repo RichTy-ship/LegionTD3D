@@ -1,0 +1,6 @@
+{
+  "name": "Bastion Protocol: Auto TD",
+  "description": "Competitive 2v2 Auto Tower Defense & Tactical Strategy game featuring 8 Factions, 32 Fighters, 12 Mercenaries, 21 Waves, King Defense, and Adaptive AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
